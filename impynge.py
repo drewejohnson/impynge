@@ -8,6 +8,13 @@ import argparse
 import numpy
 from matplotlib import pyplot
 
+CONVERT_BARNS_CM2 = 1E-24
+"""Conversion from barns to cm^2"""
+AVOGADROS_NUMBER = 6.022E23
+"""Avogadro's number"""
+MASS_NEUTRON = 1.008
+"""Atomic mass of a neutron"""
+
 
 # Load default settings for homework
 __choices__ = {
@@ -26,8 +33,6 @@ __choices__ = {
         'disp': 25
     }
 }
-
-MASS_NEUTRON = 1.008
 
 
 def computeMassLambda(m: (float, int), M: (float, int)):
@@ -84,6 +89,7 @@ def retrieveXS(filePath, evMin=None, evMax=None):
 
 
 def __parse__():
+    """Parse user arguments"""
     parser = argparse.ArgumentParser()
     parser.add_argument('target', help='Name of the target',
                         choices=__choices__.keys(), type=str)
@@ -97,7 +103,6 @@ def __parse__():
                         help='Do not show figures.')
     args = parser.parse_args()
 
-    # if path is not in the arguments, assume this is the run mode
     # load from default
     defOpts = __choices__[args.target]
     args.path = defOpts['path']
@@ -135,7 +140,6 @@ def computeDisplacementXS(energies, scatterXS, massLambda,
     dispPerPKA = numpy.zeros_like(scatterXS)  # displacements per PKA
     targetEnergies = numpy.multiply(energies, massLambda) / 2.0
     denominator = 2 * displacementEnergy
-    # TODO streamline this iteration
     for indx, targetKin in enumerate(targetEnergies):
         if targetKin < displacementEnergy:
             continue
@@ -150,11 +154,62 @@ def computeDisplacementXS(energies, scatterXS, massLambda,
 
     return dispPerPKA * scatterXS
 
+def computeDPAPerFlux(dispXS):
+    r"""
+    Compute the displacement per atom for a singular flux.
+
+    The flux will exist only at one energy E, and the result
+    will be $$\frac{dpa}{\phi(E)} = \sigma_s\nu(E)=\sigma_d(E)$$
+
+    Parameters
+    ----------
+    dispXS: numpy.array
+        Displacement cross section as a function of
+        energy.
+
+    Returns
+    -------
+    dpaPerFlux: numpy.array
+        Displacement per atom per flux
+    """
+
+    # The dpa/flux is just the displacement cross section, converted from
+    # barns to cm^2
+    return dispXS * CONVERT_BARNS_CM2
+
+
+def computeDisplacedAtomDensity(dispXS, molWeight, density):
+    """
+    Compute the density of the displaced atoms per unit flux
+
+    Parameters
+    ----------
+    dispXS: numpy.array
+        Displacement cross section [b]
+    molWeight: float or int
+        Molecular weight of the target [g/mol]
+    density: float
+        Density of the target [g/cc]
+
+    Returns
+    -------
+    displacedDensity: numpy.array
+        displacement cross section times the number density
+    """
+    return dispXS * CONVERT_BARNS_CM2 * density * AVOGADROS_NUMBER / molWeight
+
+
 
 def __plotter__(x, y, xlabel='Incident neutron energy [eV]',
-                ylabel='Cross section [b]', title=None):
+                ylabel='Cross section [b]', title=None, plotZeros=True):
     fig, ax = pyplot.subplots(1, 1)
-    ax.plot(x, y)
+    if plotZeros:
+        px, py = x, y
+    else:
+        nonZeroIndx = numpy.where(y != 0)
+        px = x[nonZeroIndx]
+        py = y[nonZeroIndx]
+    ax.plot(px, py)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_xscale('log')
@@ -169,11 +224,34 @@ if __name__ == '__main__':
     args = __parse__()
     energies, scatterXS = retrieveXS(args.path, args.e_min, args.e_max)
     massLambda = computeMassLambda(MASS_NEUTRON, args.mass)
+    # ------------------------------------------
+    # Compute displacement XS
+    # Compute dpa/unit flux
+    # Compute displaced atom density / unit flux
+    # ------------------------------------------
     dispXS = computeDisplacementXS(energies, scatterXS, massLambda,
                                    args.disp, args.cutoff)
-    dispFig, dispAx = __plotter__(energies, dispXS)
+    dpaPerFlux = computeDPAPerFlux(dispXS)
+    displacedDensity = computeDisplacedAtomDensity(dispXS, args.mass, args.density)
+    # -----
+    # Plots
+    # -----
+    dispFig, dispAx = __plotter__(
+        energies, dispXS, title='Displacement cross section for {}'
+            .format(args.target))
+    dpaFluxFig, dpaFAx = __plotter__(
+        energies, dpaPerFlux, title='DPA per unit flux for {}'.format(args.target),
+        ylabel=r'$\frac{dpa}{\phi}$ [dpa/cm$^2$/s]', plotZeros=False
+    )
+    densFig, densAx = __plotter__(
+        energies, displacedDensity, plotZeros=False,
+        title='Displaced atom density per unit flux for {}'.format(args.target),
+        ylabel=r'$\frac{R}{\phi}$ [#/cm/s]'
+    )
 
     if not args.no_show:
         pyplot.show()
     if args.save:
         dispFig.savefig('{}_dispXS'.format(args.target))
+        dpaFluxFig.savefig('{}_dpaPerFlux'.format(args.target))
+        densFig.savefig('{}_dens'.format(args.target))
